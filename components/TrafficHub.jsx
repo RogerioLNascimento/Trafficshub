@@ -902,8 +902,212 @@ const NAV = [
   { id: "contracts", label: "Contratos", icon: FileText },
   { id: "campaigns", label: "Campanhas", icon: Megaphone },
   { id: "pipeline", label: "Pipeline", icon: KanbanIcon },
+  { id: "agenda", label: "Google Agenda", icon: Calendar },
   { id: "ai", label: "Copiloto IA", icon: Sparkles },
 ];
+
+// ---------------------------------------------------------------------------
+// VIEW: GOOGLE AGENDA
+// ---------------------------------------------------------------------------
+
+function AgendaView() {
+  const [tokens, setTokens] = useState(null);
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState(null);
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState({ title: "", date: "", startTime: "09:00", endTime: "10:00", description: "" });
+
+  // Lê tokens da URL após callback do Google
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const status = params.get("google");
+    const tokensParam = params.get("tokens");
+
+    if (status === "success" && tokensParam) {
+      setTokens(tokensParam);
+      try { window.localStorage.setItem("google_tokens", tokensParam); } catch (e) {}
+      window.history.replaceState({}, "", window.location.pathname);
+      fetchEvents(tokensParam);
+    } else if (status === "error") {
+      setError("Não foi possível conectar ao Google Agenda. Tente novamente.");
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+
+    // Tenta carregar tokens salvos
+    try {
+      const saved = window.localStorage.getItem("google_tokens");
+      if (saved && !tokensParam) {
+        setTokens(saved);
+        fetchEvents(saved);
+      }
+    } catch (e) {}
+  }, []);
+
+  const fetchEvents = async (t) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/google/calendar?tokens=${encodeURIComponent(t)}`);
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error);
+      setEvents(json.events || []);
+    } catch (e) {
+      setError("Erro ao carregar eventos: " + e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const createEvent = async () => {
+    if (!form.title || !form.date) return;
+    setCreating(true);
+    setError(null);
+    try {
+      const start = new Date(`${form.date}T${form.startTime}:00`).toISOString();
+      const end = new Date(`${form.date}T${form.endTime}:00`).toISOString();
+      const res = await fetch("/api/google/calendar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tokens, event: { title: form.title, start, end, description: form.description } }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error);
+      setShowForm(false);
+      setForm({ title: "", date: "", startTime: "09:00", endTime: "10:00", description: "" });
+      await fetchEvents(tokens);
+    } catch (e) {
+      setError("Erro ao criar evento: " + e.message);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const disconnect = () => {
+    try { window.localStorage.removeItem("google_tokens"); } catch (e) {}
+    setTokens(null);
+    setEvents([]);
+  };
+
+  const fmtDate = (iso) => {
+    if (!iso) return "—";
+    return new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  };
+
+  if (!tokens) {
+    return (
+      <div className="view">
+        <div className="view-header">
+          <h1>Google Agenda</h1>
+          <p className="view-sub">Conecte sua conta para visualizar e criar eventos</p>
+        </div>
+        <div className="card agenda-connect-card">
+          <Calendar size={36} color="#2DD4BF" style={{ marginBottom: 14 }} />
+          <h2 style={{ margin: "0 0 8px", fontFamily: "Sora, sans-serif", fontSize: 18 }}>Conectar Google Agenda</h2>
+          <p style={{ color: "#8993A6", fontSize: 13.5, marginBottom: 22, maxWidth: 400 }}>
+            Autorize o TrafficHub a acessar seu Google Agenda para visualizar compromissos e criar reuniões com clientes direto do sistema.
+          </p>
+          {error && <div className="ai-error" style={{ marginBottom: 14 }}>{error}</div>}
+          <a href="/api/google/auth" className="btn btn-primary" style={{ textDecoration: "none" }}>
+            <Calendar size={15} /> Conectar com Google
+          </a>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="view">
+      <div className="view-header view-header-row">
+        <div>
+          <h1>Google Agenda</h1>
+          <p className="view-sub">{events.length} eventos nos próximos 30 dias</p>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="btn btn-ghost" onClick={() => fetchEvents(tokens)} disabled={loading}>
+            {loading ? <Loader2 size={14} className="spin" /> : "↻"} Atualizar
+          </button>
+          <button className="btn btn-primary" onClick={() => setShowForm(true)}>
+            <Plus size={15} /> Novo evento
+          </button>
+          <button className="btn btn-ghost" onClick={disconnect} style={{ color: "#FB7185" }}>
+            Desconectar
+          </button>
+        </div>
+      </div>
+
+      {error && <div className="card" style={{ color: "#FB7185", fontSize: 13 }}>{error}</div>}
+
+      {loading && (
+        <div className="card" style={{ display: "flex", alignItems: "center", gap: 10, color: "#8993A6" }}>
+          <Loader2 size={16} className="spin" /> Carregando eventos...
+        </div>
+      )}
+
+      {!loading && events.length === 0 && (
+        <div className="card"><div className="empty-mini">Nenhum evento nos próximos 30 dias.</div></div>
+      )}
+
+      {!loading && events.length > 0 && (
+        <div className="card">
+          <table className="table">
+            <thead>
+              <tr><th>Evento</th><th>Início</th><th>Fim</th><th>Link</th></tr>
+            </thead>
+            <tbody>
+              {events.map((e) => (
+                <tr key={e.id}>
+                  <td style={{ fontWeight: 500 }}>{e.title}</td>
+                  <td>{fmtDate(e.start)}</td>
+                  <td>{fmtDate(e.end)}</td>
+                  <td>
+                    {e.link && (
+                      <a href={e.link} target="_blank" rel="noopener noreferrer"
+                        style={{ color: "#2DD4BF", fontSize: 12, textDecoration: "none" }}>
+                        Abrir →
+                      </a>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {showForm && (
+        <Modal title="Novo evento no Google Agenda" onClose={() => setShowForm(false)}>
+          <Field label="Título do evento">
+            <input value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} placeholder="Ex: Reunião com Cliente X" />
+          </Field>
+          <Field label="Data">
+            <input type="date" value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} />
+          </Field>
+          <div className="field-row">
+            <Field label="Horário de início">
+              <input type="time" value={form.startTime} onChange={(e) => setForm((f) => ({ ...f, startTime: e.target.value }))} />
+            </Field>
+            <Field label="Horário de fim">
+              <input type="time" value={form.endTime} onChange={(e) => setForm((f) => ({ ...f, endTime: e.target.value }))} />
+            </Field>
+          </div>
+          <Field label="Descrição (opcional)">
+            <textarea rows={3} value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
+          </Field>
+          {error && <div className="ai-error">{error}</div>}
+          <div className="modal-actions">
+            <button className="btn btn-ghost" onClick={() => setShowForm(false)}>Cancelar</button>
+            <button className="btn btn-primary" onClick={createEvent} disabled={creating || !form.title || !form.date}>
+              {creating ? <Loader2 size={14} className="spin" /> : <Plus size={14} />}
+              Criar evento
+            </button>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
 
 export default function TrafficHub() {
   const { data, ready, save } = useAppData();
@@ -948,6 +1152,7 @@ export default function TrafficHub() {
         {view === "contracts" && <ContractsView data={data} />}
         {view === "campaigns" && <CampaignsView data={data} />}
         {view === "pipeline" && <PipelineView data={data} save={save} />}
+        {view === "agenda" && <AgendaView />}
         {view === "ai" && <AIView data={data} />}
       </main>
     </div>
@@ -1090,6 +1295,8 @@ input:focus, select:focus, textarea:focus { border-color: #2DD4BF; }
 .ai-msg-ai { align-self: flex-start; color: #D5D9E2; white-space: pre-wrap; }
 .ai-input-row { display: flex; gap: 8px; padding: 14px; border-top: 1px solid #1B202C; }
 .ai-input-row input { flex: 1; }
+
+.agenda-connect-card { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 48px 32px; }
 
 @media (max-width: 880px) {
   .sidebar { width: 70px; }
