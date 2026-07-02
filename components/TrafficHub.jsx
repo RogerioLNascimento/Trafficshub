@@ -165,16 +165,32 @@ function useAppData(userId) {
 
   const saveClient = useCallback(async (client, isNew = false) => {
     const row = {
-      user_id: userId, name: client.name, niche: client.niche,
-      status: client.status, monthly_value: client.monthlyValue,
-      contact: client.contact, email: client.email, phone: client.phone,
-      tags: client.tags, start_date: client.startDate || null,
+      user_id: userId,
+      name: client.name,
+      niche: client.niche || "Infoproduto",
+      status: client.status || "prospeccao",
+      monthly_value: Number(client.monthlyValue) || 0,
+      contact: client.contact || "",
+      email: client.email || "",
+      phone: client.phone || "",
+      tags: client.tags || [],
+      start_date: client.startDate || null,
     };
     if (isNew) {
-      const { data: inserted } = await supabase.from("clients").insert(row).select().single();
+      const { data: inserted, error } = await supabase
+        .from("clients")
+        .insert(row)
+        .select()
+        .single();
+      if (error) { console.error("Erro ao salvar cliente:", error); return null; }
       return inserted;
     } else {
-      await supabase.from("clients").update(row).eq("id", client.id);
+      const { error } = await supabase
+        .from("clients")
+        .update(row)
+        .eq("id", client.id)
+        .eq("user_id", userId);
+      if (error) { console.error("Erro ao atualizar cliente:", error); return null; }
       return client;
     }
   }, [userId]);
