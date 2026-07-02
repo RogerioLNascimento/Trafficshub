@@ -1,11 +1,12 @@
 "use client";
 
 import React, { useState, useEffect, useMemo, useCallback } from "react";
+import { supabase } from "@/lib/supabase";
 import {
   LayoutDashboard, Users, FileText, Megaphone, Kanban as KanbanIcon, Sparkles,
   Plus, X, TrendingUp, TrendingDown, AlertTriangle, DollarSign, Search,
   Tag as TagIcon, Calendar, Mail, Phone, ChevronRight, Loader2, CheckCircle2,
-  Clock, ArrowRight, Trash2, Building2, Target
+  Clock, ArrowRight, Trash2, Building2, Target, LogOut
 } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -118,33 +119,90 @@ const fmtBRL = (v) => v.toLocaleString("pt-BR", { style: "currency", currency: "
 // STORAGE HOOK
 // ---------------------------------------------------------------------------
 
-const STORAGE_KEY = "trafficshub-state";
-
-function useAppData() {
+function useAppData(userId) {
   const [data, setData] = useState(null);
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        setData(JSON.parse(raw));
-      } else {
-        setData({ clients: SEED_CLIENTS, leads: SEED_LEADS, insights: {} });
+    if (!userId) return;
+    (async () => {
+      try {
+        const [{ data: clients }, { data: leads }] = await Promise.all([
+          supabase.from("clients").select("*").eq("user_id", userId).order("created_at", { ascending: false }),
+          supabase.from("leads").select("*").eq("user_id", userId).order("created_at", { ascending: false }),
+        ]);
+
+        // Mapeia campos do banco para o formato do sistema
+        const mappedClients = (clients || []).map(c => ({
+          id: c.id, name: c.name, niche: c.niche || "Infoproduto",
+          status: c.status || "prospeccao", monthlyValue: c.monthly_value || 0,
+          contact: c.contact || "", email: c.email || "", phone: c.phone || "",
+          tags: c.tags || [], startDate: c.start_date || "", trendBias: 0,
+        }));
+
+        const mappedLeads = (leads || []).map(l => ({
+          id: l.id, name: l.name, company: l.company || "",
+          niche: l.niche || "Infoproduto", stage: l.stage || "novo",
+          origin: l.origin || "Indicação", value: l.value || 0, note: l.note || "",
+        }));
+
+        setData({
+          clients: mappedClients.length > 0 ? mappedClients : [],
+          leads: mappedLeads.length > 0 ? mappedLeads : [],
+          insights: {},
+        });
+      } catch (e) {
+        setData({ clients: [], leads: [], insights: {} });
+      } finally {
+        setReady(true);
       }
-    } catch (e) {
-      setData({ clients: SEED_CLIENTS, leads: SEED_LEADS, insights: {} });
-    } finally {
-      setReady(true);
-    }
-  }, []);
+    })();
+  }, [userId]);
 
   const save = useCallback(async (next) => {
     setData(next);
-    try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch (e) { /* noop */ }
   }, []);
 
-  return { data, ready, save };
+  const saveClient = useCallback(async (client, isNew = false) => {
+    const row = {
+      user_id: userId, name: client.name, niche: client.niche,
+      status: client.status, monthly_value: client.monthlyValue,
+      contact: client.contact, email: client.email, phone: client.phone,
+      tags: client.tags, start_date: client.startDate || null,
+    };
+    if (isNew) {
+      const { data: inserted } = await supabase.from("clients").insert(row).select().single();
+      return inserted;
+    } else {
+      await supabase.from("clients").update(row).eq("id", client.id);
+      return client;
+    }
+  }, [userId]);
+
+  const deleteClient = useCallback(async (id) => {
+    await supabase.from("clients").delete().eq("id", id);
+  }, []);
+
+  const saveLead = useCallback(async (lead, isNew = false) => {
+    const row = {
+      user_id: userId, name: lead.name, company: lead.company,
+      niche: lead.niche, stage: lead.stage, origin: lead.origin,
+      value: lead.value, note: lead.note,
+    };
+    if (isNew) {
+      const { data: inserted } = await supabase.from("leads").insert(row).select().single();
+      return inserted;
+    } else {
+      await supabase.from("leads").update(row).eq("id", lead.id);
+      return lead;
+    }
+  }, [userId]);
+
+  const deleteLead = useCallback(async (id) => {
+    await supabase.from("leads").delete().eq("id", id);
+  }, []);
+
+  return { data, ready, save, saveClient, deleteClient, saveLead, deleteLead };
 }
 
 // ---------------------------------------------------------------------------
@@ -481,12 +539,13 @@ Escreva em português uma análise curta (3-4 frases corridas, sem bullets, sem 
   );
 }
 
-function ClientsView({ data, save }) {
+function ClientsView({ data, save, saveClient, deleteClient }) {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("todos");
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
   const [viewing, setViewing] = useState(null);
+  const [saving, setSaving] = useState(false);
 
   const filtered = data.clients.filter((c) => {
     if (statusFilter !== "todos" && c.status !== statusFilter) return false;
@@ -495,13 +554,24 @@ function ClientsView({ data, save }) {
   });
 
   const upsert = async (client) => {
-    const exists = data.clients.some((c) => c.id === client.id);
-    const clients = exists ? data.clients.map((c) => (c.id === client.id ? client : c)) : [...data.clients, client];
-    await save({ ...data, clients });
-    setShowForm(false); setEditing(null);
+    setSaving(true);
+    try {
+      const exists = data.clients.some((c) => c.id === client.id);
+      const saved = await saveClient(client, !exists);
+      const finalClient = { ...client, id: saved?.id || client.id };
+      const clients = exists
+        ? data.clients.map((c) => (c.id === client.id ? finalClient : c))
+        : [...data.clients, finalClient];
+      await save({ ...data, clients });
+    } finally {
+      setSaving(false);
+      setShowForm(false);
+      setEditing(null);
+    }
   };
 
   const remove = async (id) => {
+    await deleteClient(id);
     await save({ ...data, clients: data.clients.filter((c) => c.id !== id) });
   };
 
@@ -746,22 +816,28 @@ function LeadForm({ onSave, onClose }) {
   );
 }
 
-function PipelineView({ data, save }) {
+function PipelineView({ data, save, saveLead, deleteLead }) {
   const [showForm, setShowForm] = useState(false);
 
   const moveLead = async (leadId, dir) => {
-    const idx = STAGES.findIndex((s) => s.id === data.leads.find((l) => l.id === leadId).stage);
+    const lead = data.leads.find((l) => l.id === leadId);
+    const idx = STAGES.findIndex((s) => s.id === lead.stage);
     const nextIdx = Math.max(0, Math.min(STAGES.length - 1, idx + dir));
-    const leads = data.leads.map((l) => (l.id === leadId ? { ...l, stage: STAGES[nextIdx].id } : l));
+    const updatedLead = { ...lead, stage: STAGES[nextIdx].id };
+    await saveLead(updatedLead, false);
+    const leads = data.leads.map((l) => l.id === leadId ? updatedLead : l);
     await save({ ...data, leads });
   };
 
   const addLead = async (lead) => {
-    await save({ ...data, leads: [...data.leads, lead] });
+    const saved = await saveLead(lead, true);
+    const newLead = { ...lead, id: saved?.id || lead.id };
+    await save({ ...data, leads: [...data.leads, newLead] });
     setShowForm(false);
   };
 
   const removeLead = async (id) => {
+    await deleteLead(id);
     await save({ ...data, leads: data.leads.filter((l) => l.id !== id) });
   };
 
@@ -1109,9 +1185,15 @@ function AgendaView() {
   );
 }
 
-export default function TrafficHub() {
-  const { data, ready, save } = useAppData();
+export default function TrafficHub({ session }) {
+  const userId = session?.user?.id;
+  const userName = session?.user?.email?.split("@")[0] || "Usuário";
+  const { data, ready, save, saveClient, deleteClient, saveLead, deleteLead } = useAppData(userId);
   const [view, setView] = useState("dashboard");
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+  };
 
   if (!ready || !data) {
     return (
@@ -1138,20 +1220,21 @@ export default function TrafficHub() {
         </nav>
         <div className="sidebar-footer">
           <div className="user-chip">
-            <div className="client-avatar client-avatar-sm">GT</div>
-            <div>
-              <div className="user-name">Gestor de Tráfego</div>
-              <div className="user-plan">Plano Agência</div>
+            <div className="client-avatar client-avatar-sm">{userName.slice(0, 2).toUpperCase()}</div>
+            <div style={{ flex: 1 }}>
+              <div className="user-name">{userName}</div>
+              <div className="user-plan">Administrador</div>
             </div>
+            <button className="icon-btn" onClick={handleLogout} title="Sair"><LogOut size={14} /></button>
           </div>
         </div>
       </aside>
       <main className="main">
         {view === "dashboard" && <DashboardView data={data} save={save} />}
-        {view === "clients" && <ClientsView data={data} save={save} />}
+        {view === "clients" && <ClientsView data={data} save={save} saveClient={saveClient} deleteClient={deleteClient} />}
         {view === "contracts" && <ContractsView data={data} />}
         {view === "campaigns" && <CampaignsView data={data} />}
-        {view === "pipeline" && <PipelineView data={data} save={save} />}
+        {view === "pipeline" && <PipelineView data={data} save={save} saveLead={saveLead} deleteLead={deleteLead} />}
         {view === "agenda" && <AgendaView />}
         {view === "ai" && <AIView data={data} />}
       </main>
