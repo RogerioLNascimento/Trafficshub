@@ -984,8 +984,18 @@ const NAV = [
 ];
 
 // ---------------------------------------------------------------------------
-// VIEW: GOOGLE AGENDA
+// VIEW: GOOGLE AGENDA (calendário visual)
 // ---------------------------------------------------------------------------
+
+const WEEKDAYS = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
+const MONTHS = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
+const EVENT_COLORS = ["#2DD4BF","#8B7CF6","#FB7185","#FBBF24","#60A5FA","#34D399","#F97316"];
+
+function getEventColor(title) {
+  let h = 0;
+  for (let i = 0; i < (title||"").length; i++) h = (h << 5) - h + title.charCodeAt(i);
+  return EVENT_COLORS[Math.abs(h) % EVENT_COLORS.length];
+}
 
 function AgendaView() {
   const [tokens, setTokens] = useState(null);
@@ -994,14 +1004,15 @@ function AgendaView() {
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState(null);
   const [showForm, setShowForm] = useState(false);
+  const [selectedEvent, setSelectedEvent] = useState(null);
+  const [currentDate, setCurrentDate] = useState(new Date());
+  const [calView, setCalView] = useState("month");
   const [form, setForm] = useState({ title: "", date: "", startTime: "09:00", endTime: "10:00", description: "" });
 
-  // Lê tokens da URL após callback do Google
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const status = params.get("google");
     const tokensParam = params.get("tokens");
-
     if (status === "success" && tokensParam) {
       setTokens(tokensParam);
       try { window.localStorage.setItem("google_tokens", tokensParam); } catch (e) {}
@@ -1011,42 +1022,31 @@ function AgendaView() {
       setError("Não foi possível conectar ao Google Agenda. Tente novamente.");
       window.history.replaceState({}, "", window.location.pathname);
     }
-
-    // Tenta carregar tokens salvos
     try {
       const saved = window.localStorage.getItem("google_tokens");
-      if (saved && !tokensParam) {
-        setTokens(saved);
-        fetchEvents(saved);
-      }
+      if (saved && !tokensParam) { setTokens(saved); fetchEvents(saved); }
     } catch (e) {}
   }, []);
 
   const fetchEvents = async (t) => {
-    setLoading(true);
-    setError(null);
+    setLoading(true); setError(null);
     try {
       const res = await fetch(`/api/google/calendar?tokens=${encodeURIComponent(t)}`);
       const json = await res.json();
       if (!res.ok) throw new Error(json.error);
       setEvents(json.events || []);
-    } catch (e) {
-      setError("Erro ao carregar eventos: " + e.message);
-    } finally {
-      setLoading(false);
-    }
+    } catch (e) { setError("Erro ao carregar eventos: " + e.message); }
+    finally { setLoading(false); }
   };
 
   const createEvent = async () => {
     if (!form.title || !form.date) return;
-    setCreating(true);
-    setError(null);
+    setCreating(true); setError(null);
     try {
       const start = new Date(`${form.date}T${form.startTime}:00`).toISOString();
       const end = new Date(`${form.date}T${form.endTime}:00`).toISOString();
       const res = await fetch("/api/google/calendar", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tokens, event: { title: form.title, start, end, description: form.description } }),
       });
       const json = await res.json();
@@ -1054,41 +1054,95 @@ function AgendaView() {
       setShowForm(false);
       setForm({ title: "", date: "", startTime: "09:00", endTime: "10:00", description: "" });
       await fetchEvents(tokens);
-    } catch (e) {
-      setError("Erro ao criar evento: " + e.message);
-    } finally {
-      setCreating(false);
-    }
+    } catch (e) { setError("Erro ao criar evento: " + e.message); }
+    finally { setCreating(false); }
   };
 
   const disconnect = () => {
     try { window.localStorage.removeItem("google_tokens"); } catch (e) {}
-    setTokens(null);
-    setEvents([]);
+    setTokens(null); setEvents([]);
   };
 
-  const fmtDate = (iso) => {
-    if (!iso) return "—";
-    return new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : "";
+  const fmtFull = (iso) => iso ? new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—";
+  const today = new Date();
+  const isToday = (d) => d.getFullYear() === today.getFullYear() && d.getMonth() === today.getMonth() && d.getDate() === today.getDate();
+
+  const eventsOnDay = (date) => events.filter((e) => {
+    if (!e.start) return false;
+    const d = new Date(e.start);
+    return d.getFullYear() === date.getFullYear() && d.getMonth() === date.getMonth() && d.getDate() === date.getDate();
+  });
+
+  const buildMonthGrid = () => {
+    const year = currentDate.getFullYear(), month = currentDate.getMonth();
+    const first = new Date(year, month, 1);
+    const last = new Date(year, month + 1, 0);
+    const days = [];
+    for (let i = 0; i < first.getDay(); i++) days.push(null);
+    for (let d = 1; d <= last.getDate(); d++) days.push(new Date(year, month, d));
+    return days;
   };
+
+  const buildWeekDays = () => {
+    const d = new Date(currentDate);
+    d.setDate(d.getDate() - d.getDay());
+    return Array.from({ length: 7 }, (_, i) => { const dd = new Date(d); dd.setDate(d.getDate() + i); return dd; });
+  };
+
+  const prevPeriod = () => { const d = new Date(currentDate); if (calView === "month") d.setMonth(d.getMonth() - 1); else d.setDate(d.getDate() - 7); setCurrentDate(d); };
+  const nextPeriod = () => { const d = new Date(currentDate); if (calView === "month") d.setMonth(d.getMonth() + 1); else d.setDate(d.getDate() + 7); setCurrentDate(d); };
+
+  const upcomingEvents = [...events].filter((e) => e.start && new Date(e.start) >= new Date()).sort((a, b) => new Date(a.start) - new Date(b.start));
+
+  const CAL_CSS = `
+    .cal-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:10px}
+    .cal-nav{display:flex;align-items:center;gap:8px}
+    .cal-nav-btn{background:#141822;border:1px solid #1F2530;color:#C7CCD6;padding:6px 12px;border-radius:7px;cursor:pointer;font-size:14px;font-family:inherit}
+    .cal-nav-btn:hover{background:#1B202C}
+    .cal-title{font-family:'Sora',sans-serif;font-size:17px;font-weight:600;min-width:200px;text-align:center}
+    .cal-tabs{display:flex;gap:4px}
+    .cal-tab{background:#141822;border:1px solid #1F2530;color:#8993A6;padding:6px 13px;border-radius:7px;cursor:pointer;font-size:12px;font-family:inherit;font-weight:500}
+    .cal-tab-active{background:#1B202C;color:#2DD4BF;border-color:#2DD4BF}
+    .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:1px;background:#1F2530;border-radius:10px;overflow:hidden}
+    .cal-weekday{background:#0E1117;padding:10px 4px;text-align:center;font-size:11px;font-weight:600;color:#5B6577;text-transform:uppercase;letter-spacing:.05em}
+    .cal-day{background:#141822;min-height:90px;padding:6px;cursor:pointer}
+    .cal-day:hover{background:#161B25}
+    .cal-day-empty{background:#0E1117;min-height:90px}
+    .cal-num{font-size:12px;font-weight:600;color:#8993A6;margin-bottom:3px;width:24px;height:24px;display:flex;align-items:center;justify-content:center;border-radius:50%}
+    .cal-today .cal-num{background:#2DD4BF;color:#06231F;font-weight:700}
+    .cal-chip{font-size:10.5px;padding:2px 5px;border-radius:4px;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;font-weight:500}
+    .cal-more{font-size:10px;color:#5B6577;padding:1px 4px}
+    .week-grid{display:grid;grid-template-columns:44px repeat(7,1fr);gap:1px;background:#1F2530;border-radius:10px;overflow:hidden;max-height:550px;overflow-y:auto}
+    .week-dh{background:#0E1117;padding:8px 4px;text-align:center}
+    .week-dn{font-size:10px;color:#5B6577;font-weight:600;text-transform:uppercase}
+    .week-dd{font-size:17px;font-weight:700;color:#C7CCD6}
+    .week-dd-today{color:#2DD4BF}
+    .week-hr{background:#141822;min-height:48px;border-bottom:1px solid #1B202C;position:relative}
+    .week-tl{background:#0E1117;min-height:48px;border-bottom:1px solid #1B202C;display:flex;align-items:flex-start;justify-content:flex-end;padding:3px 6px 0}
+    .week-ht{font-size:9.5px;color:#5B6577}
+    .week-ev{position:absolute;left:2px;right:2px;border-radius:4px;padding:2px 4px;font-size:10.5px;font-weight:500;cursor:pointer;overflow:hidden;z-index:1}
+    .list-ev{display:flex;gap:12px;align-items:flex-start;padding:11px 0;border-bottom:1px solid #1B202C;cursor:pointer}
+    .list-ev:hover{opacity:.85}
+    .list-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;margin-top:4px}
+    .list-date{font-size:11px;color:#8993A6;min-width:85px}
+    .list-title{font-size:13px;font-weight:500}
+    .list-time{font-size:11.5px;color:#8993A6;margin-top:2px}
+    .ev-popup{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#141822;border:1px solid #262C3A;border-radius:12px;padding:20px;width:310px;z-index:200;box-shadow:0 20px 60px #00000090}
+    .ev-overlay{position:fixed;inset:0;z-index:199}
+  `;
 
   if (!tokens) {
     return (
       <div className="view">
-        <div className="view-header">
-          <h1>Google Agenda</h1>
-          <p className="view-sub">Conecte sua conta para visualizar e criar eventos</p>
-        </div>
+        <style>{CAL_CSS}</style>
+        <div className="view-header"><h1>Google Agenda</h1><p className="view-sub">Conecte sua conta para visualizar e criar eventos</p></div>
         <div className="card agenda-connect-card">
           <Calendar size={36} color="#2DD4BF" style={{ marginBottom: 14 }} />
           <h2 style={{ margin: "0 0 8px", fontFamily: "Sora, sans-serif", fontSize: 18 }}>Conectar Google Agenda</h2>
-          <p style={{ color: "#8993A6", fontSize: 13.5, marginBottom: 22, maxWidth: 400 }}>
-            Autorize o TrafficHub a acessar seu Google Agenda para visualizar compromissos e criar reuniões com clientes direto do sistema.
-          </p>
+          <p style={{ color: "#8993A6", fontSize: 13.5, marginBottom: 22, maxWidth: 400 }}>Autorize o TrafficHub a acessar seu Google Agenda para visualizar compromissos e criar reuniões com clientes direto do sistema.</p>
           {error && <div className="ai-error" style={{ marginBottom: 14 }}>{error}</div>}
-          <a href="/api/google/auth" className="btn btn-primary" style={{ textDecoration: "none" }}>
-            <Calendar size={15} /> Conectar com Google
-          </a>
+          <a href="/api/google/auth" className="btn btn-primary" style={{ textDecoration: "none" }}><Calendar size={15} /> Conectar com Google</a>
         </div>
       </div>
     );
@@ -1096,65 +1150,147 @@ function AgendaView() {
 
   return (
     <div className="view">
-      <div className="view-header view-header-row">
-        <div>
-          <h1>Google Agenda</h1>
-          <p className="view-sub">{events.length} eventos nos próximos 30 dias</p>
+      <style>{CAL_CSS}</style>
+
+      <div className="cal-header">
+        <div className="cal-nav">
+          <button className="cal-nav-btn" onClick={prevPeriod}>‹</button>
+          <span className="cal-title">
+            {calView === "month" ? `${MONTHS[currentDate.getMonth()]} ${currentDate.getFullYear()}`
+              : calView === "week" ? (() => { const w = buildWeekDays(); return `${w[0].getDate()} – ${w[6].getDate()} de ${MONTHS[w[6].getMonth()]}`; })()
+              : "Próximos eventos"}
+          </span>
+          <button className="cal-nav-btn" onClick={nextPeriod}>›</button>
+          <button className="cal-nav-btn" onClick={() => setCurrentDate(new Date())}>Hoje</button>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button className="btn btn-ghost" onClick={() => fetchEvents(tokens)} disabled={loading}>
-            {loading ? <Loader2 size={14} className="spin" /> : "↻"} Atualizar
-          </button>
-          <button className="btn btn-primary" onClick={() => setShowForm(true)}>
-            <Plus size={15} /> Novo evento
-          </button>
-          <button className="btn btn-ghost" onClick={disconnect} style={{ color: "#FB7185" }}>
-            Desconectar
-          </button>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <div className="cal-tabs">
+            {[["month","Mês"],["week","Semana"],["list","Lista"]].map(([v,l]) => (
+              <button key={v} className={"cal-tab" + (calView === v ? " cal-tab-active" : "")} onClick={() => setCalView(v)}>{l}</button>
+            ))}
+          </div>
+          <button className="btn btn-primary" onClick={() => setShowForm(true)}><Plus size={14} /> Evento</button>
+          <button className="btn btn-ghost" onClick={() => fetchEvents(tokens)} disabled={loading}>{loading ? <Loader2 size={13} className="spin" /> : "↻"}</button>
+          <button className="btn btn-ghost" onClick={disconnect} style={{ color: "#FB7185", fontSize: 12 }}>Sair</button>
         </div>
       </div>
 
-      {error && <div className="card" style={{ color: "#FB7185", fontSize: 13 }}>{error}</div>}
+      {error && <div className="card" style={{ color: "#FB7185", fontSize: 13, marginBottom: 14 }}>{error}</div>}
+      {loading && <div className="card" style={{ color: "#8993A6", fontSize: 13, display: "flex", gap: 8, alignItems: "center", marginBottom: 14 }}><Loader2 size={14} className="spin" /> Carregando eventos...</div>}
 
-      {loading && (
-        <div className="card" style={{ display: "flex", alignItems: "center", gap: 10, color: "#8993A6" }}>
-          <Loader2 size={16} className="spin" /> Carregando eventos...
+      {/* MONTH */}
+      {calView === "month" && !loading && (
+        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+          <div className="cal-grid">
+            {WEEKDAYS.map((d) => <div key={d} className="cal-weekday">{d}</div>)}
+            {buildMonthGrid().map((day, i) => {
+              if (!day) return <div key={i} className="cal-day-empty" />;
+              const dayEvs = eventsOnDay(day);
+              return (
+                <div key={i} className={"cal-day" + (isToday(day) ? " cal-today" : "")}
+                  onClick={() => { setForm((f) => ({ ...f, date: day.toISOString().slice(0, 10) })); setShowForm(true); }}>
+                  <div className="cal-num">{day.getDate()}</div>
+                  {dayEvs.slice(0, 3).map((e) => {
+                    const color = getEventColor(e.title);
+                    return <div key={e.id} className="cal-chip" style={{ background: color + "22", color, border: `1px solid ${color}35` }}
+                      onClick={(ev) => { ev.stopPropagation(); setSelectedEvent(e); }}>
+                      {fmtTime(e.start)} {e.title}
+                    </div>;
+                  })}
+                  {dayEvs.length > 3 && <div className="cal-more">+{dayEvs.length - 3} mais</div>}
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
-      {!loading && events.length === 0 && (
-        <div className="card"><div className="empty-mini">Nenhum evento nos próximos 30 dias.</div></div>
+      {/* WEEK */}
+      {calView === "week" && !loading && (
+        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+          <div className="week-grid">
+            <div className="week-tl week-dh" />
+            {buildWeekDays().map((day, i) => (
+              <div key={i} className="week-dh">
+                <div className="week-dn">{WEEKDAYS[day.getDay()]}</div>
+                <div className={"week-dd" + (isToday(day) ? " week-dd-today" : "")}>{day.getDate()}</div>
+              </div>
+            ))}
+            {Array.from({ length: 24 }, (_, hour) => (
+              <React.Fragment key={hour}>
+                <div className="week-tl"><span className="week-ht">{hour > 0 ? `${String(hour).padStart(2,"0")}:00` : ""}</span></div>
+                {buildWeekDays().map((day, di) => {
+                  const hourEvs = eventsOnDay(day).filter((e) => e.start && new Date(e.start).getHours() === hour);
+                  return (
+                    <div key={di} className="week-hr" onClick={() => {
+                      setForm((f) => ({ ...f, date: day.toISOString().slice(0,10), startTime: `${String(hour).padStart(2,"0")}:00`, endTime: `${String(hour+1).padStart(2,"0")}:00` }));
+                      setShowForm(true);
+                    }}>
+                      {hourEvs.map((e) => {
+                        const color = getEventColor(e.title);
+                        return <div key={e.id} className="week-ev" style={{ background: color + "25", color, border: `1px solid ${color}40`, top: 2 }}
+                          onClick={(ev) => { ev.stopPropagation(); setSelectedEvent(e); }}>
+                          {fmtTime(e.start)} {e.title}
+                        </div>;
+                      })}
+                    </div>
+                  );
+                })}
+              </React.Fragment>
+            ))}
+          </div>
+        </div>
       )}
 
-      {!loading && events.length > 0 && (
+      {/* LIST */}
+      {calView === "list" && !loading && (
         <div className="card">
-          <table className="table">
-            <thead>
-              <tr><th>Evento</th><th>Início</th><th>Fim</th><th>Link</th></tr>
-            </thead>
-            <tbody>
-              {events.map((e) => (
-                <tr key={e.id}>
-                  <td style={{ fontWeight: 500 }}>{e.title}</td>
-                  <td>{fmtDate(e.start)}</td>
-                  <td>{fmtDate(e.end)}</td>
-                  <td>
-                    {e.link && (
-                      <a href={e.link} target="_blank" rel="noopener noreferrer"
-                        style={{ color: "#2DD4BF", fontSize: 12, textDecoration: "none" }}>
-                        Abrir →
-                      </a>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          {upcomingEvents.length === 0 && <div className="empty-mini">Nenhum evento próximo.</div>}
+          {upcomingEvents.map((e) => {
+            const color = getEventColor(e.title);
+            const d = new Date(e.start);
+            return (
+              <div key={e.id} className="list-ev" onClick={() => setSelectedEvent(e)}>
+                <div className="list-dot" style={{ background: color }} />
+                <div className="list-date">{d.toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "short" })}</div>
+                <div style={{ flex: 1 }}>
+                  <div className="list-title">{e.title}</div>
+                  <div className="list-time">{fmtTime(e.start)}{e.end ? ` — ${fmtTime(e.end)}` : ""}</div>
+                  {e.description && <div style={{ fontSize: 11.5, color: "#5B6577", marginTop: 2 }}>{e.description}</div>}
+                </div>
+                {e.link && <a href={e.link} target="_blank" rel="noopener noreferrer" onClick={(ev) => ev.stopPropagation()}
+                  style={{ color: "#2DD4BF", fontSize: 12, textDecoration: "none", flexShrink: 0 }}>Abrir →</a>}
+              </div>
+            );
+          })}
         </div>
       )}
 
+      {/* EVENT POPUP */}
+      {selectedEvent && (
+        <>
+          <div className="ev-overlay" onClick={() => setSelectedEvent(null)} />
+          <div className="ev-popup">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <div style={{ width: 11, height: 11, borderRadius: 3, background: getEventColor(selectedEvent.title), flexShrink: 0 }} />
+                <span style={{ fontSize: 15, fontWeight: 600 }}>{selectedEvent.title}</span>
+              </div>
+              <button className="icon-btn" onClick={() => setSelectedEvent(null)}><X size={16} /></button>
+            </div>
+            <div style={{ fontSize: 13, color: "#8993A6", marginBottom: 4 }}>{fmtFull(selectedEvent.start)}{selectedEvent.end ? ` — ${fmtTime(selectedEvent.end)}` : ""}</div>
+            {selectedEvent.description && <div style={{ fontSize: 13, color: "#C7CCD6", lineHeight: 1.5, margin: "10px 0" }}>{selectedEvent.description}</div>}
+            {selectedEvent.link && <a href={selectedEvent.link} target="_blank" rel="noopener noreferrer"
+              className="btn btn-primary" style={{ textDecoration: "none", fontSize: 13, display: "inline-flex", marginTop: 8 }}>
+              Abrir no Google Agenda →
+            </a>}
+          </div>
+        </>
+      )}
+
+      {/* FORM MODAL */}
       {showForm && (
-        <Modal title="Novo evento no Google Agenda" onClose={() => setShowForm(false)}>
+        <Modal title="Novo evento" onClose={() => setShowForm(false)}>
           <Field label="Título do evento">
             <input value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} placeholder="Ex: Reunião com Cliente X" />
           </Field>
@@ -1162,12 +1298,8 @@ function AgendaView() {
             <input type="date" value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} />
           </Field>
           <div className="field-row">
-            <Field label="Horário de início">
-              <input type="time" value={form.startTime} onChange={(e) => setForm((f) => ({ ...f, startTime: e.target.value }))} />
-            </Field>
-            <Field label="Horário de fim">
-              <input type="time" value={form.endTime} onChange={(e) => setForm((f) => ({ ...f, endTime: e.target.value }))} />
-            </Field>
+            <Field label="Início"><input type="time" value={form.startTime} onChange={(e) => setForm((f) => ({ ...f, startTime: e.target.value }))} /></Field>
+            <Field label="Fim"><input type="time" value={form.endTime} onChange={(e) => setForm((f) => ({ ...f, endTime: e.target.value }))} /></Field>
           </div>
           <Field label="Descrição (opcional)">
             <textarea rows={3} value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} />
@@ -1176,8 +1308,7 @@ function AgendaView() {
           <div className="modal-actions">
             <button className="btn btn-ghost" onClick={() => setShowForm(false)}>Cancelar</button>
             <button className="btn btn-primary" onClick={createEvent} disabled={creating || !form.title || !form.date}>
-              {creating ? <Loader2 size={14} className="spin" /> : <Plus size={14} />}
-              Criar evento
+              {creating ? <Loader2 size={14} className="spin" /> : <Plus size={14} />} Criar evento
             </button>
           </div>
         </Modal>
